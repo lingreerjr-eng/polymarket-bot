@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 
@@ -49,6 +49,16 @@ class Market:
         directional_tokens = ["up", "down", "up/down", "up or down", "rise", "fall", "increase", "decrease"]
         has_direction = any(token in normalized for token in directional_tokens)
         return has_asset and has_time and has_direction
+
+    @property
+    def is_open_current_year(self) -> bool:
+        """True when the market is still open and ends this calendar year."""
+
+        now = datetime.now(timezone.utc)
+        end = self.ends_at
+        if end.tzinfo is None:
+            end = end.replace(tzinfo=timezone.utc)
+        return end > now and end.year == now.year
 
 
 @dataclass

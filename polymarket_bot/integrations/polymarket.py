@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 import httpx
 
@@ -90,6 +90,120 @@ class PolymarketClient:
             source=self.base_url,
         )
 
+    async def account_balances(self) -> Dict[str, float]:
+        """Return wallet balances (e.g., USDC) from the Polymarket API."""
+
+        try:
+            response = await self._get("/balances")
+            data = response.json()
+        except Exception:
+            return {}
+
+        balances: Dict[str, float] = {}
+        if isinstance(data, list):
+            entries = data
+        elif isinstance(data, dict):
+            entries = data.get("balances") or data.get("data") or data.get("results") or data.get("wallet") or []
+            # Some deployments return a symbol:balance mapping directly
+            if not isinstance(entries, list):
+                for key, value in data.items():
+                    try:
+                        balances[str(key).upper()] = float(value)
+                    except Exception:
+                        continue
+                return balances
+        else:
+            entries = []
+
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            symbol = str(entry.get("symbol") or entry.get("currency") or entry.get("token") or "").upper()
+            try:
+                amount = float(entry.get("balance") or entry.get("available") or entry.get("amount") or 0)
+            except Exception:
+                amount = 0.0
+            if symbol:
+                balances[symbol] = amount
+        return balances
+
+    async def list_positions(self) -> List[dict]:
+        """Return open positions from Polymarket (if the API exposes them)."""
+
+        try:
+            response = await self._get("/positions")
+            data = response.json()
+        except Exception:
+            return []
+
+        entries = data.get("positions") if isinstance(data, dict) else data
+        if isinstance(entries, dict):
+            entries = entries.get("data") or entries.get("results") or []
+        if not isinstance(entries, list):
+            entries = []
+
+        parsed: List[dict] = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            market_id = str(
+                item.get("marketId")
+                or item.get("market_id")
+                or item.get("id")
+                or item.get("market")
+                or ""
+            )
+            side = str(item.get("outcome") or item.get("side") or item.get("position") or "").upper() or "YES"
+            try:
+                size = float(item.get("size") or item.get("amount") or item.get("shares") or 0.0)
+            except Exception:
+                size = 0.0
+            try:
+                avg_price = float(
+                    item.get("avgPrice")
+                    or item.get("averagePrice")
+                    or item.get("average_price")
+                    or item.get("price")
+                    or 0.0
+                )
+            except Exception:
+                avg_price = 0.0
+            try:
+                realized = float(item.get("realizedPnl") or item.get("realized") or 0.0)
+            except Exception:
+                realized = 0.0
+            try:
+                unrealized = float(item.get("unrealizedPnl") or item.get("unrealized") or 0.0)
+            except Exception:
+                unrealized = 0.0
+
+            parsed.append(
+                {
+                    "market_id": market_id,
+                    "side": side,
+                    "size": size,
+                    "average_price": avg_price,
+                    "realized_pnl": realized,
+                    "unrealized_pnl": unrealized,
+                }
+            )
+        return parsed
+
+    async def account_snapshot(self) -> dict:
+        """Aggregate balances and positions into a lightweight snapshot."""
+
+        balances = await self.account_balances()
+        positions = await self.list_positions()
+        cash = balances.get("USDC") or balances.get("USD") or balances.get("USDC.E") or 0.0
+        realized = sum(p.get("realized_pnl", 0.0) for p in positions)
+        unrealized = sum(p.get("unrealized_pnl", 0.0) for p in positions)
+        return {
+            "cash": cash,
+            "positions": positions,
+            "realized_pnl": realized,
+            "unrealized_pnl": unrealized,
+        }
+
     async def place_order(
         self,
         market_id: str,
@@ -140,4 +254,4 @@ class PolymarketClient:
 
 
 async def filter_markets_for_crypto(markets: Iterable[Market]) -> List[Market]:
-    return [m for m in markets if m.is_crypto_quarter_hour]
+    return [m for m in markets if m.is_crypto_quarter_hour and m.is_open_current_year]

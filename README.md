@@ -64,7 +64,7 @@ All runtime configuration is driven by environment variables:
 | Variable | Default | Description |
 | --- | --- | --- |
 | `TRADING_MODE` | `demo` | `live` for production CLOB, `demo` for sandbox |
-| `POLYMARKET_API_KEY` | _none_ | Required for authenticated live trading |
+| `POLYMARKET_API_KEY` | _none_ | Required for authenticated live trading and for fetching balances/positions |
 | `POLYMARKET_BASE_URL` | `https://clob.polymarket.com` | Live API base |
 | `POLYMARKET_DEMO_URL` | `https://clob.demo.polymarket.com` | Demo API base |
 | `POLL_INTERVAL` | `15` | Seconds between scans |
@@ -93,10 +93,17 @@ OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=gemma3:27b-cloud
 ```
 
+> You only need an API key—no username/password is required. The bot calls `/balances` and `/positions` to populate your real wallet balance and open trades on the dashboard. Without an API key, balances default to zero and the bot cannot show live PnL.
+
 ### Finding eligible markets and their IDs
 - The scanner now pulls **all** Polymarket markets and highlights 15-minute crypto titles: `Bitcoin Up or Down - 15 minute`, `Ethereum Up or Down - 15 minute`, and `XRP Up or Down - 15 minute`. If Polymarket publishes variants, adjust the title filter in `polymarket_bot/models.py` and `polymarket_bot/integrations/polymarket.py`.
 - Open the dashboard at `/markets` (JSON) or `/` (HTML) to see the full feed. Each row shows `id`, prices, and a ✅ flag for crypto 15m eligibility. Check the box to **enable trading** on an eligible market; unchecked markets are ignored even if eligible.
 - You can also query the Polymarket API directly: `curl "$POLYMARKET_BASE_URL/markets?limit=50" | jq '.[] | {id, question}'` (or replace with the demo base URL). Matching IDs from that feed will appear in the dashboard once fetched.
+
+### Showing real balances and PnL
+- On startup the bot pulls `/balances` and `/positions` from Polymarket to seed the portfolio view with your actual USDC balance, open positions, and realized/unrealized PnL.
+- Supply `POLYMARKET_API_KEY` in `.env` (demo or live) so the dashboard can display your real wallet instead of the simulated $10,000 starter balance.
+- The portfolio panel refreshes unrealized PnL each scan using the latest quotes; realized PnL updates whenever positions are closed via the bot.
 
 ### News source
 The optional news enrichment uses the [Cryptopanic](https://cryptopanic.com/developers/api/) API. Supply your token via

@@ -32,7 +32,7 @@ from polymarket_bot.services import portfolio
 class TradingBot:
     def __init__(self, config: BotConfig) -> None:
         self.config = config
-        self.portfolio = PortfolioState(cash=10_000)
+        self.portfolio = PortfolioState(cash=0.0)
         self.risk_limits = RiskLimits(
             max_daily_loss=config.max_daily_loss,
             max_position_per_market=config.max_position_per_market,
@@ -66,6 +66,8 @@ class TradingBot:
         self.last_scan_at: Optional[datetime] = None
         self.last_status: str = "idle"
         self.selected_market_ids: set[str] = set()
+        self._portfolio_bootstrapped: bool = False
+        self._unrealized_marks: Dict[str, float] = {}
 
     async def run_forever(self) -> None:
         while True:
@@ -73,6 +75,7 @@ class TradingBot:
             await asyncio.sleep(self.config.poll_interval)
 
     async def tick(self) -> None:
+        await self._bootstrap_portfolio()
         if portfolio.enforce_daily_loss(self.portfolio, self.risk_limits):
             print("Daily loss limit reached - pausing trading")
             return
@@ -104,6 +107,9 @@ class TradingBot:
         for market in trade_targets:
             await self._trade_market(market)
 
+        # Refresh unrealized PnL from the latest marks
+        self.portfolio.unrealized_pnl = sum(self._unrealized_marks.values())
+
     async def _trade_market(self, market) -> None:
         snapshot = await self.microstructure.snapshot(market)
         yes_price = min(snapshot.best_ask, market.outcome_yes_price)
@@ -121,6 +127,7 @@ class TradingBot:
         yes_pos, no_pos = self._positions_for_market(market.id)
         if yes_pos or no_pos:
             self.last_snapshots[market.id] = snapshot
+            self._mark_unrealized(market.id, yes_price, no_price)
             return
 
         # Depth-weighted entry: limit to what the book can support
@@ -192,6 +199,7 @@ class TradingBot:
             )
 
         self.last_snapshots[market.id] = snapshot
+        self._mark_unrealized(market.id, yes_price, no_price)
 
     async def _ai_gate_trade(
         self,
@@ -217,6 +225,63 @@ class TradingBot:
             "size_cap": size_cap,
         }
         return decision
+
+    async def _bootstrap_portfolio(self) -> None:
+        """Fetch balances/positions from Polymarket once to seed the portfolio state."""
+
+        if self._portfolio_bootstrapped:
+            return
+        snapshot = await self.polymarket_client.account_snapshot()
+        if not snapshot:
+            self._portfolio_bootstrapped = True
+            return
+
+        try:
+            self.portfolio.cash = float(snapshot.get("cash", self.portfolio.cash))
+        except Exception:
+            pass
+        try:
+            self.portfolio.realized_pnl = float(snapshot.get("realized_pnl", self.portfolio.realized_pnl))
+            self.portfolio.unrealized_pnl = float(snapshot.get("unrealized_pnl", self.portfolio.unrealized_pnl))
+        except Exception:
+            pass
+
+        positions = snapshot.get("positions") or []
+        if isinstance(positions, list):
+            for pos in positions:
+                if not isinstance(pos, dict):
+                    continue
+                market_id = str(pos.get("market_id") or pos.get("id") or "")
+                side = str(pos.get("side") or "").upper() or "YES"
+                try:
+                    size = float(pos.get("size") or 0.0)
+                except Exception:
+                    size = 0.0
+                try:
+                    avg = float(pos.get("average_price") or pos.get("avg_price") or 0.0)
+                except Exception:
+                    avg = 0.0
+                key = f"{market_id}:{side}"
+                self.portfolio.positions[key] = Position(
+                    market_id=market_id,
+                    side=side,
+                    size=size,
+                    average_price=avg,
+                )
+
+        self._portfolio_bootstrapped = True
+
+    def _mark_unrealized(self, market_id: str, yes_price: float, no_price: float) -> None:
+        yes_pos, no_pos = self._positions_for_market(market_id)
+        unrealized = 0.0
+        if yes_pos:
+            unrealized += (yes_price - yes_pos.average_price) * yes_pos.size
+        if no_pos:
+            unrealized += (no_price - no_pos.average_price) * no_pos.size
+        if yes_pos or no_pos:
+            self._unrealized_marks[market_id] = unrealized
+        elif market_id in self._unrealized_marks:
+            self._unrealized_marks.pop(market_id, None)
 
     async def _manage_open_risk(
         self,
@@ -366,7 +431,7 @@ class TradingBot:
 
     def set_market_selected(self, market_id: str, selected: bool) -> None:
         if selected:
-            self.selected_market_ids.add(market_id)
+            self.selected_market_ids = {market_id}
         else:
             self.selected_market_ids.discard(market_id)
 

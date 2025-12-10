@@ -15,7 +15,7 @@ class MarketScanner:
         self.last_all: List[Market] = []
 
     async def scan(self) -> List[Market]:
-        markets = await self.client.list_markets()
+        markets = [m for m in await self.client.list_markets() if m.is_open_current_year]
         self.last_total = len(markets)
         self.last_all = markets
         filtered = await filter_markets_for_crypto(markets)
