@@ -58,26 +58,40 @@ class PolymarketClient:
 
     async def list_markets(self) -> List[Market]:
         try:
-            response = await self._get("/markets")
+            response = await self._get("/markets", params={"limit": 250})
             markets_data = response.json()
         except Exception:
             markets_data = []
-        return [self._parse_market(item) for item in markets_data if self._is_crypto(item)]
+        parsed = [self._parse_market(item) for item in markets_data if self._is_crypto(item)]
+        return parsed
 
     def _parse_market(self, item: dict) -> Market:
+        raw_end = item.get("endDate") or item.get("closeTime") or ""
+        try:
+            ends_at = datetime.fromisoformat(raw_end.replace("Z", "+00:00")) if raw_end else datetime.utcnow()
+        except Exception:
+            ends_at = datetime.utcnow()
         return Market(
             id=str(item.get("id")),
             question=item.get("question", ""),
             outcome_yes_price=float(item.get("yesPrice", 0.0)),
             outcome_no_price=float(item.get("noPrice", 0.0)),
-            ends_at=datetime.fromisoformat(item.get("endDate")),
+            ends_at=ends_at,
             liquidity=float(item.get("liquidity", 0.0)),
             volume=float(item.get("volume", 0.0)),
             source=self.base_url,
         )
 
     def _is_crypto(self, item: dict) -> bool:
-        question = str(item.get("question", "")).lower()
+        question = str(item.get("question", "")).strip().lower()
+        exact_titles = {
+            "bitcoin up or down - 15 minute",
+            "ethereum up or down - 15 minute",
+            "xrp up or down - 15 minute",
+        }
+        if question in exact_titles:
+            return True
+
         keywords = ["bitcoin", "btc", "ethereum", "eth", "xrp", "ripple", "crypto"]
         return any(word in question for word in keywords)
 

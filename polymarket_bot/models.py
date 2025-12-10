@@ -21,14 +21,22 @@ class Market:
     def is_crypto_quarter_hour(self) -> bool:
         """Return True when the market is a 15-minute BTC/ETH/XRP up/down contract."""
 
-        normalized = self.question.lower()
-        assets = ["bitcoin", "btc", "ethereum", "eth", "xrp", "ripple"]
-        return (
-            any(asset in normalized for asset in assets)
-            and "up" in normalized
-            and "down" in normalized
-            and "15" in normalized
-        )
+        normalized = self.question.strip().lower()
+        exact_titles = {
+            "bitcoin up or down - 15 minute",
+            "ethereum up or down - 15 minute",
+            "xrp up or down - 15 minute",
+        }
+        if normalized in exact_titles:
+            return True
+
+        assets = ["bitcoin", "btc", "ethereum", "eth", "xrp", "ripple", "crypto"]
+        has_asset = any(asset in normalized for asset in assets)
+        time_tokens = ["15m", "15 m", "15 minute", "15-minute", "15 min", "quarter"]
+        has_time = any(token in normalized for token in time_tokens) or " 15" in normalized
+        directional_tokens = ["up", "down", "up/down", "up or down", "rise", "fall", "increase", "decrease"]
+        has_direction = any(token in normalized for token in directional_tokens)
+        return has_asset and has_time and has_direction
 
 
 @dataclass

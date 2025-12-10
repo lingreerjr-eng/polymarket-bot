@@ -4,13 +4,22 @@ import asyncio
 from datetime import datetime
 from typing import Dict, Optional, Tuple
 
+from polymarket_bot.agents.critic import AICritic
+from polymarket_bot.agents.forecaster import AIForecaster
+from polymarket_bot.agents.trader import AITrader
 from polymarket_bot.config import BotConfig
+from polymarket_bot.integrations.ai_client import AIClient
+from polymarket_bot.integrations.news import NewsClient
 from polymarket_bot.integrations.polymarket import PolymarketClient
 from polymarket_bot.models import (
+    Critique,
+    DecisionContext,
+    Forecast,
     PortfolioState,
     RiskLimits,
     Position,
     TimingFeatures,
+    TradeDecision,
 )
 from polymarket_bot.services.analytics import PerformanceTracker
 from polymarket_bot.services.execution import ExecutionService
@@ -30,6 +39,11 @@ class TradingBot:
             risk_free_rate=config.risk_free_rate,
         )
         self.performance = PerformanceTracker()
+        self.ai_client = AIClient(config.ollama_base_url, config.ollama_model)
+        self.forecaster = AIForecaster(self.ai_client)
+        self.critic = AICritic(self.ai_client)
+        self.trader_agent = AITrader(self.ai_client)
+        self.news_client = NewsClient(config.news_api_key)
         self.polymarket_client = PolymarketClient(
             base_url=config.api_url,
             api_key=config.polymarket_api_key,
@@ -44,6 +58,11 @@ class TradingBot:
             spread_widening_limit=config.spread_widening_limit,
         )
         self.pending_entries: Dict[str, datetime] = {}
+        self.last_markets = []
+        self.last_snapshots: Dict[str, object] = {}
+        self.last_ai_notes: Dict[str, object] = {}
+        self.last_scan_at: Optional[datetime] = None
+        self.last_status: str = "idle"
 
     async def run_forever(self) -> None:
         while True:
@@ -56,8 +75,12 @@ class TradingBot:
             return
 
         markets = await self.market_scanner.scan()
+        self.last_markets = markets
+        self.last_scan_at = datetime.utcnow()
+        self.last_status = f"Scanned {self.market_scanner.last_total} markets, {self.market_scanner.last_filtered} eligible"
         if not markets:
             print("No qualifying crypto 15m markets found")
+            self.last_status = "No qualifying crypto 15m markets found"
             return
 
         for market in markets:
@@ -98,29 +121,88 @@ class TradingBot:
         )
 
         if entry_filters_pass and size_cap > 0:
-            if combined_price < 0.985 and snapshot.near_top_depth >= 3 * size_cap:
-                await self._buy_side(market.id, "YES", size_cap, yes_price)
-                await self._buy_side(market.id, "NO", size_cap, no_price)
+            decision = await self._ai_gate_trade(
+                market=market,
+                cheap_side=cheap_side,
+                size_cap=size_cap,
+                snapshot=snapshot,
+                mispricing=mispricing,
+            )
+            ai_action = decision.action.upper() if decision else "BUY"
+            ai_size = decision.size if decision else size_cap
+            ai_size = min(size_cap, ai_size if ai_size > 0 else size_cap)
+            if ai_action not in {"BUY", cheap_side, f"BUY_{cheap_side}", "HEDGE"}:
+                self.performance.log_trade(
+                    market_id=market.id,
+                    action="AI_SKIP",
+                    size=0,
+                    price=cheap_price,
+                    confidence=decision.confidence if decision else 0.0,
+                    reasoning=(
+                        decision.reasoning
+                        if decision
+                        else "AI gate declined entry despite microstructure pass"
+                    ),
+                )
+                return
+            if combined_price < 0.985 and snapshot.near_top_depth >= 3 * ai_size:
+                await self._buy_side(market.id, "YES", ai_size, yes_price)
+                await self._buy_side(market.id, "NO", ai_size, no_price)
                 self.pending_entries.pop(market.id, None)
                 self.performance.log_trade(
                     market_id=market.id,
                     action="HEDGE",
-                    size=size_cap,
+                    size=ai_size,
                     price=combined_price,
-                    confidence=0.92,
-                    reasoning="Depth-backed hedge under $0.985 with benign microstructure",
+                    confidence=decision.confidence if decision else 0.92,
+                    reasoning=(
+                        decision.reasoning
+                        if decision
+                        else "Depth-backed hedge under $0.985 with benign microstructure"
+                    ),
                 )
             else:
-                await self._buy_side(market.id, cheap_side, size_cap, cheap_price)
+                await self._buy_side(market.id, cheap_side, ai_size, cheap_price)
                 self.pending_entries[market.id] = snapshot.timestamp
                 self.performance.log_trade(
                     market_id=market.id,
                     action=f"BUY_{cheap_side}",
-                    size=size_cap,
+                    size=ai_size,
                     price=cheap_price,
-                    confidence=0.72,
-                    reasoning="Bought discounted side after volatility/depth/time filters",
+                    confidence=decision.confidence if decision else 0.72,
+                    reasoning=(
+                        decision.reasoning
+                        if decision
+                        else "Bought discounted side after volatility/depth/time filters"
+                    ),
                 )
+
+        self.last_snapshots[market.id] = snapshot
+
+    async def _ai_gate_trade(
+        self,
+        *,
+        market,
+        cheap_side: str,
+        size_cap: float,
+        snapshot,
+        mispricing: float,
+    ) -> Optional[TradeDecision]:
+        news_summary = await self.news_client.latest_bitcoin_headlines()
+        context = DecisionContext(market=market, portfolio=self.portfolio, news=news_summary)
+        forecast: Forecast = await self.forecaster(context)
+        critique: Critique = await self.critic(context, forecast)
+        decision: TradeDecision = await self.trader_agent(context, forecast, critique)
+        self.last_ai_notes[market.id] = {
+            "forecast": forecast,
+            "critique": critique,
+            "decision": decision,
+            "mispricing": mispricing,
+            "snapshot": snapshot,
+            "cheap_side": cheap_side,
+            "size_cap": size_cap,
+        }
+        return decision
 
     async def _manage_open_risk(
         self,
