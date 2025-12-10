@@ -94,9 +94,9 @@ OLLAMA_MODEL=gemma3:27b-cloud
 ```
 
 ### Finding eligible markets and their IDs
-- The scanner only accepts exact 15-minute crypto titles: `Bitcoin Up or Down - 15 minute`, `Ethereum Up or Down - 15 minute`, and `XRP Up or Down - 15 minute`. If Polymarket publishes variants, adjust the title filter in `polymarket_bot/models.py` and `polymarket_bot/integrations/polymarket.py`.
-- To confirm it is hitting real markets, open the dashboard at `/markets` (JSON) or `/` (HTML) and look for the `id` and question fields returned from the live API. Those IDs are the ones used for orders.
-- You can also query the Polymarket API directly: `curl "$POLYMARKET_BASE_URL/markets?limit=50" | jq '.[] | {id, question}'` (or replace with the demo base URL). Matching IDs from that feed will appear in the bot once they satisfy the crypto 15-minute filter.
+- The scanner now pulls **all** Polymarket markets and highlights 15-minute crypto titles: `Bitcoin Up or Down - 15 minute`, `Ethereum Up or Down - 15 minute`, and `XRP Up or Down - 15 minute`. If Polymarket publishes variants, adjust the title filter in `polymarket_bot/models.py` and `polymarket_bot/integrations/polymarket.py`.
+- Open the dashboard at `/markets` (JSON) or `/` (HTML) to see the full feed. Each row shows `id`, prices, and a ✅ flag for crypto 15m eligibility. Check the box to **enable trading** on an eligible market; unchecked markets are ignored even if eligible.
+- You can also query the Polymarket API directly: `curl "$POLYMARKET_BASE_URL/markets?limit=50" | jq '.[] | {id, question}'` (or replace with the demo base URL). Matching IDs from that feed will appear in the dashboard once fetched.
 
 ### News source
 The optional news enrichment uses the [Cryptopanic](https://cryptopanic.com/developers/api/) API. Supply your token via
@@ -116,8 +116,9 @@ TRADING_MODE=live POLYMARKET_API_KEY=your-key-here python -m polymarket_bot.cli 
 
 - `--watch` keeps the scanner/strategy loop running continuously.
 - `--dashboard` starts the FastAPI dashboard at `http://localhost:8000`.
-  - `GET /` renders a live HTML view of scan status, markets, positions, trades,
+  - `GET /` renders a live HTML view of scan status, markets (with per-market trade toggles), positions, trades,
     PnL, and AI approvals.
+  - `POST /markets/select` toggles trading for a market: `{ "market_id": "<id>", "selected": true }`.
   - `GET /markets`, `/portfolio`, `/performance`, `/ai`, and `/health` return
     JSON for programmatic monitoring.
 
@@ -128,7 +129,7 @@ python -m polymarket_bot.cli
 ```
 
 ## How It Trades
-1. **Scan**: Pulls Polymarket markets, filtering to 15-minute BTC/ETH/XRP Up/Down contracts.
+1. **Scan**: Pulls all Polymarket markets, highlights 15-minute BTC/ETH/XRP Up/Down contracts, and only trades those you enabled in the dashboard.
 2. **Microstructure Check**: Computes 1-minute realized volatility, 30s depth acceleration, spread drift, and book depth around top ticks.
 3. **Timing Classifier**: Allows entries only when volatility is muted and the market is outside macro-news windows (no time-of-day restriction).
 4. **Enter Cheap Side**: Buys the lower-priced outcome first (with AI approval) only when depth has refreshed and conditions are benign.

@@ -58,11 +58,14 @@ class TradingBot:
             spread_widening_limit=config.spread_widening_limit,
         )
         self.pending_entries: Dict[str, Dict[str, object]] = {}
+        self.last_all_markets = []
+        self.last_eligible_markets = []
         self.last_markets = []
         self.last_snapshots: Dict[str, object] = {}
         self.last_ai_notes: Dict[str, object] = {}
         self.last_scan_at: Optional[datetime] = None
         self.last_status: str = "idle"
+        self.selected_market_ids: set[str] = set()
 
     async def run_forever(self) -> None:
         while True:
@@ -74,16 +77,31 @@ class TradingBot:
             print("Daily loss limit reached - pausing trading")
             return
 
-        markets = await self.market_scanner.scan()
-        self.last_markets = markets
+        eligible_markets = await self.market_scanner.scan()
+        self.last_all_markets = list(self.market_scanner.last_all)
+        self.last_eligible_markets = eligible_markets
+        self.last_markets = self.last_all_markets
         self.last_scan_at = datetime.utcnow()
-        self.last_status = f"Scanned {self.market_scanner.last_total} markets, {self.market_scanner.last_filtered} eligible"
-        if not markets:
+        self.last_status = (
+            f"Scanned {self.market_scanner.last_total} markets, "
+            f"{self.market_scanner.last_filtered} eligible crypto"
+        )
+
+        if not eligible_markets:
             print("No qualifying crypto 15m markets found")
             self.last_status = "No qualifying crypto 15m markets found"
             return
 
-        for market in markets:
+        trade_targets = (
+            [m for m in eligible_markets if m.id in self.selected_market_ids]
+            if self.selected_market_ids
+            else eligible_markets
+        )
+        if self.selected_market_ids and not trade_targets:
+            self.last_status += " | Waiting for selected eligible markets"
+            return
+
+        for market in trade_targets:
             await self._trade_market(market)
 
     async def _trade_market(self, market) -> None:
@@ -345,6 +363,12 @@ class TradingBot:
             price=price,
             side=side,
         )
+
+    def set_market_selected(self, market_id: str, selected: bool) -> None:
+        if selected:
+            self.selected_market_ids.add(market_id)
+        else:
+            self.selected_market_ids.discard(market_id)
 
 
 async def run_bot(config: BotConfig) -> None:

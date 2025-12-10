@@ -45,7 +45,7 @@ def create_app(bot: TradingBot) -> FastAPI:
         </head>
         <body>
           <h1>Polymarket Crypto Dashboard</h1>
-          <div class=\"muted\">Live scan status for BTC/ETH/XRP 15m markets.</div>
+          <div class=\"muted\">Live scan status for BTC/ETH/XRP 15m markets. Check a box to allow trading.</div>
           <section>
             <h3>Status</h3>
             <div id=\"status\">Loading...</div>
@@ -83,11 +83,32 @@ def create_app(bot: TradingBot) -> FastAPI:
             }
             function renderMarkets(data) {
               if (!data.markets || data.markets.length === 0) return 'No markets scanned yet.';
+              const selected = new Set(data.selected_ids || []);
+              const eligible = new Set(data.eligible_ids || []);
               const rows = data.markets.map(m => {
                 const snap = data.snapshots[m.id] || {};
-                return `<tr><td>${m.question}</td><td>${m.outcome_yes_price.toFixed(3)}</td><td>${m.outcome_no_price.toFixed(3)}</td><td>${snap.best_bid ?? '-'}</td><td>${snap.best_ask ?? '-'}</td><td>${(snap.realized_vol_1m ?? 0).toFixed(4)}</td><td>${(snap.depth_change_30s ?? 0).toFixed(3)}</td></tr>`;
+                const checked = selected.has(m.id) ? 'checked' : '';
+                const disabled = eligible.has(m.id) ? '' : 'disabled';
+                const eligibleFlag = eligible.has(m.id) ? '✅' : '—';
+                return `<tr>
+                  <td><input type="checkbox" ${checked} ${disabled} onchange="toggleSelect('${m.id}', this.checked)"></td>
+                  <td>${m.id}</td>
+                  <td>${m.question}</td>
+                  <td>${m.outcome_yes_price.toFixed(3)}</td>
+                  <td>${m.outcome_no_price.toFixed(3)}</td>
+                  <td>${snap.best_bid ?? '-'}</td>
+                  <td>${snap.best_ask ?? '-'}</td>
+                  <td>${(snap.realized_vol_1m ?? 0).toFixed(4)}</td>
+                  <td>${(snap.depth_change_30s ?? 0).toFixed(3)}</td>
+                  <td>${eligibleFlag}</td>
+                </tr>`;
               }).join('');
-              return `<table><thead><tr><th>Question</th><th>Yes</th><th>No</th><th>Bid</th><th>Ask</th><th>1m Vol</th><th>Depth Δ30s</th></tr></thead><tbody>${rows}</tbody></table>`;
+              const scanned = data.last_scan_at ? `<div class="muted">Last scan: ${data.last_scan_at}</div>` : '';
+              return `${scanned}<table><thead><tr><th>Trade?</th><th>ID</th><th>Question</th><th>Yes</th><th>No</th><th>Bid</th><th>Ask</th><th>1m Vol</th><th>Depth Δ30s</th><th>Crypto 15m</th></tr></thead><tbody>${rows}</tbody></table>`;
+            }
+            async function toggleSelect(marketId, selected) {
+              await fetch('/markets/select', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ market_id: marketId, selected }) });
+              await load();
             }
             function renderPortfolio(p) {
               const positions = Object.values(p.positions || {});
@@ -133,6 +154,19 @@ def create_app(bot: TradingBot) -> FastAPI:
             "markets": [_jsonify(m) for m in bot.last_markets],
             "snapshots": {k: _jsonify(v) for k, v in bot.last_snapshots.items()},
             "last_scan_at": _jsonify(bot.last_scan_at),
+            "eligible_ids": [m.id for m in bot.last_eligible_markets],
+            "selected_ids": sorted(bot.selected_market_ids),
+        }
+
+    @app.post("/markets/select")
+    async def select_market(payload: dict) -> dict:
+        market_id = payload.get("market_id")
+        selected = bool(payload.get("selected", True))
+        if market_id:
+            bot.set_market_selected(market_id, selected)
+        return {
+            "selected_ids": sorted(bot.selected_market_ids),
+            "eligible_ids": [m.id for m in bot.last_eligible_markets],
         }
 
     @app.get("/performance")
