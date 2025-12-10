@@ -6,17 +6,16 @@ trading, executes a fixed low-price/hedge strategy, and ships with a lightweight
 FastAPI dashboard.
 
 ## Features
-- **Depth-Weighted Arbitrage Playbook**: Buys whichever side drops below $0.35
-  only when 1-minute realized volatility is muted, depth has refreshed, and the
-  mispricing after slippage exceeds 4%. Hedges under $0.985 when the book shows
-  at least 3x the order size across the top two ticks.
+- **Depth-Weighted Arbitrage Playbook**: Enters the lower-priced outcome first,
+  waits for the opposite side to cheapen, then pairs the trade only if the
+  combined average cost stays under $1 and the book has enough refreshed depth.
 - **Real-Time Scanning**: Filters Polymarket to BTC/ETH/XRP "Up or Down"
   15-minute listings (explicitly matching the titles "Bitcoin/Ethereum/XRP Up or
   Down - 15 minute") and respects configurable rate limits. No synthetic markets
   are injected—only live API data will appear.
 - **Microstructure & Timing Filters**: A dedicated scanner tracks depth changes,
   spread shifts, and volatility while a backtestable timing classifier gates
-  entries to quiet, low-information hours (midnight–early-morning US time).
+  entries to low-volatility, non-news windows without restricting time-of-day.
 - **AI-Gated Decisions**: Every entry/hedge request is reviewed by Ollama-backed
   forecaster/critic/trader agents before orders are sent, and the latest AI
   calls are visible on the dashboard.
@@ -73,7 +72,7 @@ All runtime configuration is driven by environment variables:
 | `MAX_POSITION_PER_MARKET` | `250` | Absolute USD cap per market |
 | `RISK_FREE_RATE` | `0.02` | Used by sizing clamps |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Where to send Ollama requests |
-| `OLLAMA_MODEL` | `llama3` | Ollama model name used by the agents |
+| `OLLAMA_MODEL` | `gemma3:27b-cloud` | Ollama model name used by the agents |
 | `NEWS_API_KEY` | _none_ | Optional Cryptopanic token for news summaries |
 | `POLYMARKET_RATE_LIMIT` | `60` | Max Polymarket requests per minute |
 | `DASHBOARD_HOST` | `0.0.0.0` | Dashboard bind address |
@@ -90,9 +89,19 @@ Example `.env` (do **not** commit this file):
 TRADING_MODE=demo
 POLL_INTERVAL=20
 POLYMARKET_API_KEY=replace-me
-OLLAMA_MODEL=llama3
 OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=gemma3:27b-cloud
 ```
+
+### Finding eligible markets and their IDs
+- The scanner only accepts exact 15-minute crypto titles: `Bitcoin Up or Down - 15 minute`, `Ethereum Up or Down - 15 minute`, and `XRP Up or Down - 15 minute`. If Polymarket publishes variants, adjust the title filter in `polymarket_bot/models.py` and `polymarket_bot/integrations/polymarket.py`.
+- To confirm it is hitting real markets, open the dashboard at `/markets` (JSON) or `/` (HTML) and look for the `id` and question fields returned from the live API. Those IDs are the ones used for orders.
+- You can also query the Polymarket API directly: `curl "$POLYMARKET_BASE_URL/markets?limit=50" | jq '.[] | {id, question}'` (or replace with the demo base URL). Matching IDs from that feed will appear in the bot once they satisfy the crypto 15-minute filter.
+
+### News source
+The optional news enrichment uses the [Cryptopanic](https://cryptopanic.com/developers/api/) API. Supply your token via
+`NEWS_API_KEY` to include recent crypto headlines alongside the AI decision prompts. If omitted, the bot falls back to a
+technical-only signal.
 
 ## Running the Bot
 ### Demo (sandbox) mode
@@ -121,12 +130,14 @@ python -m polymarket_bot.cli
 ## How It Trades
 1. **Scan**: Pulls Polymarket markets, filtering to 15-minute BTC/ETH/XRP Up/Down contracts.
 2. **Microstructure Check**: Computes 1-minute realized volatility, 30s depth acceleration, spread drift, and book depth around top ticks.
-3. **Timing Classifier**: Allows entries only during quiet US hours (typically 05:00–10:00 UTC) and outside macro-news windows.
-4. **Discount Detection**: Buys the cheap side < $0.35 only when mispricing > 4% after slippage and depth has refreshed.
-5. **AI Approval**: Forecaster/Critic/Trader agents (backed by your configured Ollama model) review each qualifying setup and gate size/action before an order is sent.
-6. **Hedge**: If the combined YES+NO price is < $0.985 and the book shows 3x your size within two ticks, hedge immediately; otherwise, wait up to `HEDGE_TIMEOUT_SECONDS`.
-7. **Exit**: Flatten single legs if hedges fail to appear, volatility spikes, depth evaporates, or spreads widen.
-8. **Monitor**: Dashboard and logs expose P&L, timing decisions, and all trade/hedge actions.
+3. **Timing Classifier**: Allows entries only when volatility is muted and the market is outside macro-news windows (no time-of-day restriction).
+4. **Enter Cheap Side**: Buys the lower-priced outcome first (with AI approval) only when depth has refreshed and conditions are benign.
+5. **Wait for Opposite to Soften**: Tracks the opposite outcome and hedges only after its price falls below the entry reference and the projected combined average price of both sides stays under $1 with sufficient depth.
+6. **Exit**: Flatten single legs if hedges fail to appear within the timeout, volatility spikes, depth evaporates, or spreads widen.
+7. **Monitor**: Dashboard and logs expose P&L, timing decisions, and all trade/hedge actions.
+
+Example flow: buy the cheaper "Bitcoin Down" leg at $0.25, wait for the market to move and the "Bitcoin Up" leg to slip to $0.45,
+then hedge. The combined average cost is $0.70 (well under $1), leaving upside to parity while limiting downside.
 
 ## Market-Making & Exit Controls
 - Uses best bid/ask quotes when available to improve execution quality.

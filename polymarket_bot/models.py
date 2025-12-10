@@ -24,15 +24,27 @@ class Market:
         normalized = self.question.strip().lower()
         exact_titles = {
             "bitcoin up or down - 15 minute",
+            "bitcoin up or down - 15 minutes",
             "ethereum up or down - 15 minute",
+            "ethereum up or down - 15 minutes",
             "xrp up or down - 15 minute",
+            "xrp up or down - 15 minutes",
         }
         if normalized in exact_titles:
             return True
 
         assets = ["bitcoin", "btc", "ethereum", "eth", "xrp", "ripple", "crypto"]
         has_asset = any(asset in normalized for asset in assets)
-        time_tokens = ["15m", "15 m", "15 minute", "15-minute", "15 min", "quarter"]
+        time_tokens = [
+            "15m",
+            "15 m",
+            "15 minute",
+            "15 minutes",
+            "15-minute",
+            "15-minutes",
+            "15 min",
+            "quarter",
+        ]
         has_time = any(token in normalized for token in time_tokens) or " 15" in normalized
         directional_tokens = ["up", "down", "up/down", "up or down", "rise", "fall", "increase", "decrease"]
         has_direction = any(token in normalized for token in directional_tokens)

@@ -59,10 +59,16 @@ class PolymarketClient:
     async def list_markets(self) -> List[Market]:
         try:
             response = await self._get("/markets", params={"limit": 250})
-            markets_data = response.json()
+            data = response.json()
         except Exception:
-            markets_data = []
-        parsed = [self._parse_market(item) for item in markets_data if self._is_crypto(item)]
+            data = []
+
+        if isinstance(data, dict):
+            markets_data = data.get("markets") or data.get("data") or data.get("results") or []
+        else:
+            markets_data = data
+
+        parsed = [self._parse_market(item) for item in markets_data if isinstance(item, dict) and self._is_crypto(item)]
         return parsed
 
     def _parse_market(self, item: dict) -> Market:
@@ -86,13 +92,29 @@ class PolymarketClient:
         question = str(item.get("question", "")).strip().lower()
         exact_titles = {
             "bitcoin up or down - 15 minute",
+            "bitcoin up or down - 15 minutes",
             "ethereum up or down - 15 minute",
+            "ethereum up or down - 15 minutes",
             "xrp up or down - 15 minute",
+            "xrp up or down - 15 minutes",
         }
         if question in exact_titles:
             return True
 
-        keywords = ["bitcoin", "btc", "ethereum", "eth", "xrp", "ripple", "crypto"]
+        keywords = [
+            "bitcoin",
+            "btc",
+            "ethereum",
+            "eth",
+            "xrp",
+            "ripple",
+            "crypto",
+            "15 minute",
+            "15 minutes",
+            "15-min",
+            "15-minutes",
+            "15min",
+        ]
         return any(word in question for word in keywords)
 
     async def place_order(

@@ -2,10 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
-
 from polymarket_bot.models import TimingFeatures
-from polymarket_bot.services.microstructure import MicrostructureScanner
 
 
 @dataclass
@@ -24,9 +21,6 @@ class TimingClassifier:
         if features.depth_change_30s <= self.depth_acceleration_threshold:
             return False
         if features.spread_change >= self.spread_widening_limit:
-            return False
-        if not MicrostructureScanner.is_quiet_us_hour(features.timestamp):
-            # Prefer the midnight/early-morning US session when noise is lowest
             return False
         return True
 

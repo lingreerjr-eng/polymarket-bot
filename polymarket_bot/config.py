@@ -55,7 +55,7 @@ class BotConfig:
             ),
             risk_free_rate=float(os.getenv("RISK_FREE_RATE", "0.02")),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "llama3"),
+            ollama_model=os.getenv("OLLAMA_MODEL", "gemma3:27b-cloud"),
             news_api_key=os.getenv("NEWS_API_KEY"),
             dashboard_host=os.getenv("DASHBOARD_HOST", "0.0.0.0"),
             dashboard_port=int(os.getenv("DASHBOARD_PORT", "8000")),

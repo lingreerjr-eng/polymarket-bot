@@ -113,9 +113,3 @@ class MicrostructureScanner:
         high_impact_hours = range(13, 21)
         return hour in high_impact_hours
 
-    @staticmethod
-    def is_quiet_us_hour(ts: datetime) -> bool:
-        """Return True for midnight to early-morning US hours (05:00-10:00 UTC)."""
-
-        return ts.hour in range(5, 11)
-

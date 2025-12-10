@@ -57,7 +57,7 @@ class TradingBot:
             depth_acceleration_threshold=config.depth_acceleration_threshold,
             spread_widening_limit=config.spread_widening_limit,
         )
-        self.pending_entries: Dict[str, datetime] = {}
+        self.pending_entries: Dict[str, Dict[str, object]] = {}
         self.last_markets = []
         self.last_snapshots: Dict[str, object] = {}
         self.last_ai_notes: Dict[str, object] = {}
@@ -94,9 +94,16 @@ class TradingBot:
 
         yes_pos, no_pos = self._positions_for_market(market.id)
         cheap_side, cheap_price = ("YES", yes_price) if yes_price < no_price else ("NO", no_price)
+        other_side_price = no_price if cheap_side == "YES" else yes_price
         base_size = min(self.portfolio.cash * 0.05, self.risk_limits.max_position_per_market)
 
         await self._manage_open_risk(market.id, yes_pos, no_pos, yes_price, no_price, snapshot)
+
+        # Skip fresh entries if we already hold one leg; hedge logic is handled separately
+        yes_pos, no_pos = self._positions_for_market(market.id)
+        if yes_pos or no_pos:
+            self.last_snapshots[market.id] = snapshot
+            return
 
         # Depth-weighted entry: limit to what the book can support
         size_cap = min(base_size, snapshot.near_top_depth / 3) if snapshot.near_top_depth else base_size
@@ -111,10 +118,9 @@ class TradingBot:
 
         entry_filters_pass = all(
             [
-                cheap_price < 0.35,
+                cheap_price < other_side_price,
                 snapshot.realized_vol_1m < self.config.volatility_threshold,
                 snapshot.depth_change_30s > self.config.depth_acceleration_threshold,
-                mispricing > self.config.mispricing_edge,
                 not snapshot.in_macro_window,
                 self.timing_classifier.allow_entry(features),
             ]
@@ -145,37 +151,27 @@ class TradingBot:
                     ),
                 )
                 return
-            if combined_price < 0.985 and snapshot.near_top_depth >= 3 * ai_size:
-                await self._buy_side(market.id, "YES", ai_size, yes_price)
-                await self._buy_side(market.id, "NO", ai_size, no_price)
-                self.pending_entries.pop(market.id, None)
-                self.performance.log_trade(
-                    market_id=market.id,
-                    action="HEDGE",
-                    size=ai_size,
-                    price=combined_price,
-                    confidence=decision.confidence if decision else 0.92,
-                    reasoning=(
-                        decision.reasoning
-                        if decision
-                        else "Depth-backed hedge under $0.985 with benign microstructure"
-                    ),
-                )
-            else:
-                await self._buy_side(market.id, cheap_side, ai_size, cheap_price)
-                self.pending_entries[market.id] = snapshot.timestamp
-                self.performance.log_trade(
-                    market_id=market.id,
-                    action=f"BUY_{cheap_side}",
-                    size=ai_size,
-                    price=cheap_price,
-                    confidence=decision.confidence if decision else 0.72,
-                    reasoning=(
-                        decision.reasoning
-                        if decision
-                        else "Bought discounted side after volatility/depth/time filters"
-                    ),
-                )
+
+            await self._buy_side(market.id, cheap_side, ai_size, cheap_price)
+            self.pending_entries[market.id] = {
+                "timestamp": snapshot.timestamp,
+                "initial_other_price": other_side_price,
+                "entry_side": cheap_side,
+                "entry_price": cheap_price,
+                "planned_size": ai_size,
+            }
+            self.performance.log_trade(
+                market_id=market.id,
+                action=f"BUY_{cheap_side}",
+                size=ai_size,
+                price=cheap_price,
+                confidence=decision.confidence if decision else 0.72,
+                reasoning=(
+                    decision.reasoning
+                    if decision
+                    else "Bought cheaper outcome; waiting for opposite to cheapen before hedging"
+                ),
+            )
 
         self.last_snapshots[market.id] = snapshot
 
@@ -214,33 +210,66 @@ class TradingBot:
         snapshot,
     ) -> None:
         now = datetime.utcnow()
-        pending_ts = self.pending_entries.get(market_id)
+        pending = self.pending_entries.get(market_id)
+        pending_ts = pending.get("timestamp") if isinstance(pending, dict) else pending
 
         # hedge existing single-leg if conditions are right
         combined_price = yes_price + no_price
         if yes_pos and not no_pos:
-            if combined_price < 0.985 and snapshot.near_top_depth >= 3 * yes_pos.size and not snapshot.in_macro_window:
-                await self._buy_side(market_id, "NO", yes_pos.size, no_price)
+            trigger_price = pending.get("initial_other_price") if isinstance(pending, dict) else None
+            planned_size = pending.get("planned_size") if isinstance(pending, dict) else yes_pos.size
+            projected_cost = self._combined_average(
+                yes_pos,
+                no_pos,
+                add_yes=0,
+                add_no=planned_size,
+                price_yes=yes_price,
+                price_no=no_price,
+            )
+            if (
+                trigger_price is not None
+                and no_price < trigger_price
+                and projected_cost < 0.99
+                and snapshot.near_top_depth >= 3 * planned_size
+                and not snapshot.in_macro_window
+            ):
+                await self._buy_side(market_id, "NO", planned_size, no_price)
                 self.performance.log_trade(
                     market_id=market_id,
                     action="HEDGE_NO",
-                    size=yes_pos.size,
+                    size=planned_size,
                     price=no_price,
-                    confidence=0.85,
-                    reasoning="Added NO hedge with sufficient depth and tight pricing",
+                    confidence=0.88,
+                    reasoning="Opposite outcome cheapened; paired hedge keeps combined cost < $1",
                 )
                 self.pending_entries.pop(market_id, None)
                 return
         if no_pos and not yes_pos:
-            if combined_price < 0.985 and snapshot.near_top_depth >= 3 * no_pos.size and not snapshot.in_macro_window:
-                await self._buy_side(market_id, "YES", no_pos.size, yes_price)
+            trigger_price = pending.get("initial_other_price") if isinstance(pending, dict) else None
+            planned_size = pending.get("planned_size") if isinstance(pending, dict) else no_pos.size
+            projected_cost = self._combined_average(
+                yes_pos,
+                no_pos,
+                add_yes=planned_size,
+                add_no=0,
+                price_yes=yes_price,
+                price_no=no_price,
+            )
+            if (
+                trigger_price is not None
+                and yes_price < trigger_price
+                and projected_cost < 0.99
+                and snapshot.near_top_depth >= 3 * planned_size
+                and not snapshot.in_macro_window
+            ):
+                await self._buy_side(market_id, "YES", planned_size, yes_price)
                 self.performance.log_trade(
                     market_id=market_id,
                     action="HEDGE_YES",
-                    size=no_pos.size,
+                    size=planned_size,
                     price=yes_price,
-                    confidence=0.85,
-                    reasoning="Added YES hedge with sufficient depth and tight pricing",
+                    confidence=0.88,
+                    reasoning="Opposite outcome cheapened; paired hedge keeps combined cost < $1",
                 )
                 self.pending_entries.pop(market_id, None)
                 return
