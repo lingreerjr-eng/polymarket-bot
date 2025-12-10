@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -23,6 +24,7 @@ class AIClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self._ollama = self._load_ollama()
+        self._log = logging.getLogger(__name__)
 
     def _load_ollama(self):
         """Lazy-load the Ollama SDK when available."""
@@ -36,24 +38,35 @@ class AIClient:
     async def complete(self, prompt: str, temperature: float = 0.2) -> AIResponse:
         try:
             if self._ollama:
+                self._log.debug("Calling Ollama SDK", extra={"model": self.model})
                 text = await self._chat_via_sdk(prompt, temperature)
                 return AIResponse(text=text, model=self.model)
 
             payload: Dict[str, object] = {
                 "model": self.model,
-                "prompt": prompt,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Return concise JSON for the trading agent.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
                 "stream": False,
-                "temperature": temperature,
+                "options": {"temperature": temperature},
             }
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=45) as client:
                 response = await client.post(
-                    f"{self.base_url}/api/generate", json=payload
+                    f"{self.base_url}/api/chat", json=payload
                 )
                 response.raise_for_status()
                 data = response.json()
-                text = data.get("response") or data.get("message", "")
+                message = data.get("message", {}) if isinstance(data, dict) else {}
+                text = message.get("content") or data.get("response", "")
                 return AIResponse(text=text, model=self.model)
-        except Exception:
+        except Exception as exc:
+            self._log.warning(
+                "AI client falling back due to error", exc_info=exc, extra={"model": self.model}
+            )
             fallback = self._fallback_response(prompt)
             return AIResponse(text=fallback, model=f"offline-{self.model}")
 
