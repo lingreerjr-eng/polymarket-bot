@@ -39,10 +39,12 @@ class PolymarketClient:
     def __init__(
         self,
         base_url: str,
+        discovery_url: Optional[str] = None,
         api_key: Optional[str] = None,
         rate_limit_per_minute: int = 60,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.discovery_url = (discovery_url or base_url).rstrip("/")
         self.api_key = api_key
         self.rate_limiter = RateLimiter(rate_limit_per_minute)
 
@@ -56,37 +58,128 @@ class PolymarketClient:
             response.raise_for_status()
             return response
 
+    async def _get_discovery(self, path: str, params: Optional[dict] = None) -> httpx.Response:
+        await self.rate_limiter.acquire()
+        headers = {"Content-Type": "application/json"}
+        async with httpx.AsyncClient(base_url=self.discovery_url, headers=headers) as client:
+            response = await client.get(path, params=params, timeout=20)
+            response.raise_for_status()
+            return response
+
     async def list_markets(self) -> List[Market]:
-        """Return *all* available markets (no crypto filter) from the API."""
+        """Return *all* available markets (no crypto filter) from the API.
 
+        Primary discovery uses the Gamma `/markets` endpoint with explicit
+        query parameters to match Polymarket's documented filters. We retain a
+        legacy `/events` fallback (and then the trading API's `/markets`) so the
+        bot remains resilient if the discovery API changes.
+        """
+
+        markets_data: List[dict] = []
+
+        # Prefer the Gamma REST discovery feed.
+        gamma_params = {
+            "order": "id",
+            "ascending": "false",
+            "closed": "false",
+            "active": "true",
+            "archived": "false",
+            "limit": 200,
+        }
         try:
-            response = await self._get("/markets", params={"limit": 250})
+            response = await self._get_discovery("/markets", params=gamma_params)
             data = response.json()
+            if isinstance(data, dict):
+                markets_data = data.get("markets") or data.get("data") or data.get("results") or []
+            elif isinstance(data, list):
+                markets_data = data
         except Exception:
-            data = []
+            markets_data = []
 
-        if isinstance(data, dict):
-            markets_data = data.get("markets") or data.get("data") or data.get("results") or []
-        else:
-            markets_data = data
+        # Fallback to Gamma events feed if /markets fails
+        if not markets_data:
+            try:
+                response = await self._get_discovery("/events", params=gamma_params)
+                data = response.json()
+                events = data.get("events") or data.get("data") or data.get("results") or []
+                if isinstance(events, list):
+                    for event in events:
+                        if not isinstance(event, dict):
+                            continue
+                        markets = event.get("markets") or []
+                        if isinstance(markets, list):
+                            for market in markets:
+                                if isinstance(market, dict):
+                                    market.setdefault("eventTitle", event.get("title") or event.get("name"))
+                                    market.setdefault("eventEndDate", event.get("endDate") or event.get("end_time"))
+                                    markets_data.append(market)
+            except Exception:
+                markets_data = []
 
-        parsed = [self._parse_market(item) for item in markets_data if isinstance(item, dict)]
+        # Fallback to legacy trading API /markets
+        if not markets_data:
+            try:
+                response = await self._get("/markets", params={"limit": 250, "closed": False})
+                data = response.json()
+                if isinstance(data, dict):
+                    markets_data = data.get("markets") or data.get("data") or data.get("results") or []
+                else:
+                    markets_data = data
+            except Exception:
+                markets_data = []
+
+        parsed = [self._parse_market(item) for item in markets_data if isinstance(item, dict) and not item.get("closed")]
         return parsed
 
     def _parse_market(self, item: dict) -> Market:
-        raw_end = item.get("endDate") or item.get("closeTime") or ""
+        raw_end = (
+            item.get("endDate")
+            or item.get("eventEndDate")
+            or item.get("closeTime")
+            or item.get("closesAt")
+            or ""
+        )
         try:
             ends_at = datetime.fromisoformat(raw_end.replace("Z", "+00:00")) if raw_end else datetime.utcnow()
         except Exception:
             ends_at = datetime.utcnow()
+        question = (
+            item.get("question")
+            or item.get("title")
+            or item.get("name")
+            or item.get("outcome")
+            or item.get("eventTitle")
+            or ""
+        )
+        yes_price = item.get("yesPrice") if item.get("yesPrice") is not None else item.get("yes_bid")
+        no_price = item.get("noPrice") if item.get("noPrice") is not None else item.get("no_bid")
+        raw_prices = item.get("outcomePrices") or item.get("prices") or item.get("outcome_prices")
+        price_list: List[float] = []
+        if isinstance(raw_prices, list):
+            try:
+                price_list = [float(p) for p in raw_prices]
+            except Exception:
+                price_list = []
+        elif isinstance(raw_prices, str):
+            try:
+                parts = raw_prices.strip("[]").split(",")
+                price_list = [float(p) for p in parts if p.strip()]
+            except Exception:
+                price_list = []
+        if not yes_price and len(price_list) >= 1:
+            yes_price = price_list[0]
+        if not no_price and len(price_list) >= 2:
+            no_price = price_list[1]
+        liquidity = item.get("liquidity") if item.get("liquidity") is not None else item.get("liquidityNum")
+        volume = item.get("volume") if item.get("volume") is not None else item.get("volumeNum")
         return Market(
             id=str(item.get("id")),
-            question=item.get("question", ""),
-            outcome_yes_price=float(item.get("yesPrice", 0.0)),
-            outcome_no_price=float(item.get("noPrice", 0.0)),
+            question=str(question),
+            outcome_yes_price=float(yes_price or 0.0),
+            outcome_no_price=float(no_price or 0.0),
             ends_at=ends_at,
-            liquidity=float(item.get("liquidity", 0.0)),
-            volume=float(item.get("volume", 0.0)),
+            liquidity=float(liquidity or 0.0),
+            volume=float(volume or 0.0),
             source=self.base_url,
         )
 

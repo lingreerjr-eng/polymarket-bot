@@ -17,6 +17,7 @@ class BotConfig:
 
     polymarket_api_key: Optional[str]
     polymarket_base_url: str
+    polymarket_gamma_url: str
     polymarket_demo_url: str
     trading_mode: str
     poll_interval: float
@@ -43,6 +44,9 @@ class BotConfig:
             polymarket_api_key=os.getenv("POLYMARKET_API_KEY"),
             polymarket_base_url=os.getenv(
                 "POLYMARKET_BASE_URL", "https://clob.polymarket.com"
+            ),
+            polymarket_gamma_url=os.getenv(
+                "POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"
             ),
             polymarket_demo_url=os.getenv(
                 "POLYMARKET_DEMO_URL", "https://clob.demo.polymarket.com"

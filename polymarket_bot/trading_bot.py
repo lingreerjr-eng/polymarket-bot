@@ -46,6 +46,7 @@ class TradingBot:
         self.news_client = NewsClient(config.news_api_key)
         self.polymarket_client = PolymarketClient(
             base_url=config.api_url,
+            discovery_url=config.polymarket_gamma_url,
             api_key=config.polymarket_api_key,
             rate_limit_per_minute=config.rate_limit_per_minute,
         )

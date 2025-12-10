@@ -66,6 +66,7 @@ All runtime configuration is driven by environment variables:
 | `TRADING_MODE` | `demo` | `live` for production CLOB, `demo` for sandbox |
 | `POLYMARKET_API_KEY` | _none_ | Required for authenticated live trading and for fetching balances/positions |
 | `POLYMARKET_BASE_URL` | `https://clob.polymarket.com` | Live API base |
+| `POLYMARKET_GAMMA_URL` | `https://gamma-api.polymarket.com` | Discovery base used for market scanning |
 | `POLYMARKET_DEMO_URL` | `https://clob.demo.polymarket.com` | Demo API base |
 | `POLL_INTERVAL` | `15` | Seconds between scans |
 | `MAX_DAILY_LOSS` | `500` | Max daily drawdown before pausing |
@@ -96,9 +97,9 @@ OLLAMA_MODEL=gemma3:27b-cloud
 > You only need an API key—no username/password is required. The bot calls `/balances` and `/positions` to populate your real wallet balance and open trades on the dashboard. Without an API key, balances default to zero and the bot cannot show live PnL.
 
 ### Finding eligible markets and their IDs
-- The scanner now pulls **all** Polymarket markets and highlights 15-minute crypto titles: `Bitcoin Up or Down - 15 minute`, `Ethereum Up or Down - 15 minute`, and `XRP Up or Down - 15 minute`. If Polymarket publishes variants, adjust the title filter in `polymarket_bot/models.py` and `polymarket_bot/integrations/polymarket.py`.
+- The scanner now pulls **all** Polymarket markets from the Gamma discovery API using the documented `/markets` endpoint (`$POLYMARKET_GAMMA_URL/markets?order=id&ascending=false&closed=false&active=true&archived=false&limit=100`) and highlights 15-minute crypto titles: `Bitcoin Up or Down - 15 minute`, `Ethereum Up or Down - 15 minute`, and `XRP Up or Down - 15 minute`. If Polymarket publishes variants, adjust the title filter in `polymarket_bot/models.py` and `polymarket_bot/integrations/polymarket.py`.
 - Open the dashboard at `/markets` (JSON) or `/` (HTML) to see the full feed. Each row shows `id`, prices, and a ✅ flag for crypto 15m eligibility. Check the box to **enable trading** on an eligible market; unchecked markets are ignored even if eligible.
-- You can also query the Polymarket API directly: `curl "$POLYMARKET_BASE_URL/markets?limit=50" | jq '.[] | {id, question}'` (or replace with the demo base URL). Matching IDs from that feed will appear in the dashboard once fetched.
+- You can also query the Gamma API directly: `curl "$POLYMARKET_GAMMA_URL/markets?order=id&ascending=false&closed=false&active=true&archived=false&limit=50" | jq '.[] | {id, question, endDate, active}'` (or bump `limit` / add `offset` to paginate). Matching IDs from that feed will appear in the dashboard once fetched.
 
 ### Showing real balances and PnL
 - On startup the bot pulls `/balances` and `/positions` from Polymarket to seed the portfolio view with your actual USDC balance, open positions, and realized/unrealized PnL.
