@@ -6,11 +6,15 @@ trading, executes a fixed low-price/hedge strategy, and ships with a lightweight
 FastAPI dashboard.
 
 ## Features
-- **Fixed Arbitrage Playbook**: Buys whichever side drops below $0.35, hedges
-  both sides when the combined average stays under $0.99, and exits flat if no
-  hedge is available.
+- **Depth-Weighted Arbitrage Playbook**: Buys whichever side drops below $0.35
+  only when 1-minute realized volatility is muted, depth has refreshed, and the
+  mispricing after slippage exceeds 4%. Hedges under $0.985 when the book shows
+  at least 3x the order size across the top two ticks.
 - **Real-Time Scanning**: Filters Polymarket to BTC/ETH/XRP "Up or Down"
   15-minute listings and respects configurable rate limits.
+- **Microstructure & Timing Filters**: A dedicated scanner tracks depth changes,
+  spread shifts, and volatility while a backtestable timing classifier gates
+  entries to quiet, low-information hours (midnight–early-morning US time).
 - **Risk Guardrails**: Daily loss stops and per-market sizing caps keep exposure
   contained during volatile windows.
 - **Market Making & Exit Hooks**: Uses best bid/ask data (when available) and
@@ -65,6 +69,12 @@ All runtime configuration is driven by environment variables:
 | `POLYMARKET_RATE_LIMIT` | `60` | Max Polymarket requests per minute |
 | `DASHBOARD_HOST` | `0.0.0.0` | Dashboard bind address |
 | `DASHBOARD_PORT` | `8000` | Dashboard port |
+| `VOLATILITY_THRESHOLD` | `0.18` | Max 1-minute realized volatility for entries |
+| `MISPRICING_EDGE` | `0.04` | Minimum edge after slippage to enter |
+| `SLIPPAGE_PENALTY` | `0.01` | Cushion applied when estimating mispricing |
+| `HEDGE_TIMEOUT_SECONDS` | `45` | Time to wait for a hedge before flattening |
+| `DEPTH_ACCELERATION_THRESHOLD` | `0.05` | Minimum 30s depth growth to enter |
+| `SPREAD_WIDENING_LIMIT` | `0.02` | Spread change gate used for exits/timing |
 
 Example `.env` (do **not** commit this file):
 ```bash
@@ -95,11 +105,12 @@ python -m polymarket_bot.cli
 
 ## How It Trades
 1. **Scan**: Pulls Polymarket markets, filtering to 15-minute BTC/ETH/XRP Up/Down contracts.
-2. **Detect Discount**: Watches for either side (YES/NO) to fall below $0.35.
-3. **Hedge**: If the combined YES+NO average stays under $0.99, buys both sides to lock an arbitrage spread.
-4. **Accumulate**: If the opposite side is too expensive to hedge, keeps accumulating the discounted side while prices are low.
-5. **Exit**: When no hedge is available and the held side returns to break-even, closes out to avoid losses.
-6. **Monitor**: Dashboard and logs expose P&L and all trade/hedge actions.
+2. **Microstructure Check**: Computes 1-minute realized volatility, 30s depth acceleration, spread drift, and book depth around top ticks.
+3. **Timing Classifier**: Allows entries only during quiet US hours (typically 05:00–10:00 UTC) and outside macro-news windows.
+4. **Discount Detection**: Buys the cheap side < $0.35 only when mispricing > 4% after slippage and depth has refreshed.
+5. **Hedge**: If the combined YES+NO price is < $0.985 and the book shows 3x your size within two ticks, hedge immediately; otherwise, wait up to `HEDGE_TIMEOUT_SECONDS`.
+6. **Exit**: Flatten single legs if hedges fail to appear, volatility spikes, depth evaporates, or spreads widen.
+7. **Monitor**: Dashboard and logs expose P&L, timing decisions, and all trade/hedge actions.
 
 ## Market-Making & Exit Controls
 - Uses best bid/ask quotes when available to improve execution quality.

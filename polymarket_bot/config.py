@@ -29,6 +29,12 @@ class BotConfig:
     dashboard_host: str
     dashboard_port: int
     rate_limit_per_minute: int
+    volatility_threshold: float
+    mispricing_edge: float
+    slippage_penalty: float
+    hedge_timeout_seconds: int
+    depth_acceleration_threshold: float
+    spread_widening_limit: float
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -54,6 +60,14 @@ class BotConfig:
             dashboard_host=os.getenv("DASHBOARD_HOST", "0.0.0.0"),
             dashboard_port=int(os.getenv("DASHBOARD_PORT", "8000")),
             rate_limit_per_minute=int(os.getenv("POLYMARKET_RATE_LIMIT", "60")),
+            volatility_threshold=float(os.getenv("VOLATILITY_THRESHOLD", "0.18")),
+            mispricing_edge=float(os.getenv("MISPRICING_EDGE", "0.04")),
+            slippage_penalty=float(os.getenv("SLIPPAGE_PENALTY", "0.01")),
+            hedge_timeout_seconds=int(os.getenv("HEDGE_TIMEOUT_SECONDS", "45")),
+            depth_acceleration_threshold=float(
+                os.getenv("DEPTH_ACCELERATION_THRESHOLD", "0.05")
+            ),
+            spread_widening_limit=float(os.getenv("SPREAD_WIDENING_LIMIT", "0.02")),
         )
 
     @property

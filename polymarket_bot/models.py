@@ -85,3 +85,32 @@ class DecisionContext:
     market: Market
     portfolio: PortfolioState
     news: Optional[str] = None
+
+
+@dataclass
+class MicrostructureSnapshot:
+    """Single-time snapshot of order book microstructure state."""
+
+    market_id: str
+    timestamp: datetime
+    best_bid: float
+    best_ask: float
+    spread: float
+    depth_bid: float
+    depth_ask: float
+    near_top_depth: float
+    realized_vol_1m: float
+    depth_change_30s: float
+    spread_change: float
+    in_macro_window: bool
+
+
+@dataclass
+class TimingFeatures:
+    """Feature vector for the timing classifier (designed for backtests)."""
+
+    timestamp: datetime
+    realized_vol_1m: float
+    depth_change_30s: float
+    spread_change: float
+    in_macro_window: bool

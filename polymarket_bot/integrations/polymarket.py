@@ -101,16 +101,33 @@ class PolymarketClient:
         except Exception:
             return {"status": "simulated", "payload": payload}
 
-    async def best_bid_ask(self, market_id: str) -> Optional[dict]:
+    async def order_book(self, market_id: str) -> dict:
+        """Return an order book snapshot with depth aggregates."""
+
         try:
             response = await self._get(f"/markets/{market_id}/book")
             data = response.json()
-            return {
-                "bestBid": float(data.get("bids", [{}])[0].get("price", 0.0)),
-                "bestAsk": float(data.get("asks", [{}])[0].get("price", 1.0)),
-            }
         except Exception:
-            return None
+            data = {}
+
+        bids = data.get("bids", []) or []
+        asks = data.get("asks", []) or []
+        best_bid = float(bids[0].get("price", 0.0)) if bids else 0.0
+        best_ask = float(asks[0].get("price", 1.0)) if asks else 1.0
+        depth_bid = sum(float(b.get("size", 0.0)) for b in bids[:5])
+        depth_ask = sum(float(a.get("size", 0.0)) for a in asks[:5])
+        near_top_depth = sum(float(b.get("size", 0.0)) for b in bids[:2]) + sum(
+            float(a.get("size", 0.0)) for a in asks[:2]
+        )
+        return {
+            "bids": bids,
+            "asks": asks,
+            "bestBid": best_bid,
+            "bestAsk": best_ask,
+            "depthBid": depth_bid,
+            "depthAsk": depth_ask,
+            "nearTopDepth": near_top_depth,
+        }
 
 
 async def filter_markets_for_crypto(markets: Iterable[Market]) -> List[Market]:
